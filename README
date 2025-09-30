@@ -1,0 +1,63 @@
+You will receive a mixed list of PR/MR URLs from three forges: src.fedoraproject.org (Pagure), github.com (GitHub), and gitlab.com (GitLab). Produce a single consolidated, grouped report as specified below.
+
+Input
+- Next message will contain URLs, one per line. Some lines may start with @; strip it.
+- Only process valid PR/MR URLs from the three forges.
+
+What to fetch per URL
+- Pagure (src.fedoraproject.org):
+  - API: https://src.fedoraproject.org/api/0/{namespace}/{name}/pull-request/{id}
+  - Extract: repo short name (.project.name), title (.title), branch (.branch), full_url (.full_url), status (.status), initial_comment (.initial_comment).
+  - Diff size: fetch {PR_URL}.patch (fallback {PR_URL}?format=patch), count additions/deletions (lines starting with “+”/“-”, ignore headers like “diff ”, “index ”, “+++”, “---”). Size = adds + dels.
+- GitHub (github.com):
+  - API: https://api.github.com/repos/{owner}/{repo}/pulls/{number} (Accept: application/vnd.github+json)
+  - Extract: repo (.base.repo.full_name), title (.title), html_url (.html_url), state/merged_at, additions (.additions), deletions (.deletions), body (.body).
+  - Diff size: prefer additions+deletions from API; if missing, use {PR_URL}.patch and count lines as above.
+- GitLab (gitlab.com):
+  - API: https://gitlab.com/api/v4/projects/{url-encoded project path}/merge_requests/{iid}
+    - Project path is the segment before “/-/merge_requests/” (URL-encode fully).
+  - Extract: repo short name (last path segment), title (.title), web_url (.web_url), description (.description), state, source/target branch if available.
+  - Diff size: try {MR_URL}.patch (fallback {MR_URL}.diff) and count lines as above.
+
+Summarization (one or two sentences)
+- Use title + description/initial_comment/body to explain what changed and why.
+- Recognize patterns:
+  - “Update to X” → mention new version.
+  - “FF-merge”/“Forward merge” → note target branch and purpose.
+  - CVEs (CVE-YYYY-NNNNN) → call out as security fix.
+  - Rebuilds for something (e.g., “Python 3.14.0rc3 bytecode””) → consider minor, group together with similar rebuilds.
+- Write one or two sentences. Do not prefix with “Summary:”.
+
+Grouping rules (merge related items)
+- Group PRs/MRs that are clearly the same fix across branches or forges:
+  - Same package/repo family (e.g., GitHub “fedora-iot/rpm-head-signing” with Pagure “rpms/rpm-head-signing”), same CVE, same version bump, or near-identical titles that differ only by branch tags.
+  - Rebuilds for same resons (e.g. “Rebuilt for Python 3.14.0rc3 bytecode”).
+- For a grouped item:
+  - Top-level bullet: “repo-name (or consolidated label): short grouped title”
+  - Then list each related URL as its own sub-bullet; for Pagure include “[<branch>]” where known.
+  - Provide one two-sentence summary for the group.
+- Otherwise keep as individual items.
+
+Sorting
+- Sort top-level items by largest diff size first (descending).
+- If diff size is unknown, place after all known-size items, preserving input order among unknowns.
+
+Output format
+- No tables. Use a nested markdown list with visible URLs. Do not include diff numbers.
+- For a single PR/MR:
+  - repo-name: title
+    - URL
+    - Sentence 1. Sentence 2
+- For a grouped item:
+  - repo-name (grouped): short title
+    - URL_1 [branch: <branch>] (when known)
+    - URL_2 [branch: <branch>]
+    - Sentence 1. Sentence 2.
+- Do not add any extra “Reference:” bullets or explanatory text.
+
+Edge cases
+- If an API/patch fetch fails, still include the item using the title and URL; treat size as unknown.
+- Strip any leading “@” from URLs.
+- Keep the output concise and factual.
+
+Return only the final markdown list, nothing else.

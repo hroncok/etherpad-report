@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Collect rpms/* PRs authored by USER_NAME in the last DAYS, compute diff size,
+# and print a nested list sorted by largest diff:
+#  - <repo-name>: <title>
+#    - <url>
+
+set -euo pipefail
+export LANG=C.utf-8
+
+# Config
+DAYS="${DAYS:-14}"                     # e.g. 7 or 14
+USER_NAME="${USER_NAME:-churchyard}"   # PR author
+NS_FILTER="${NS_FILTER:-rpms}"         # namespace filter
+MAX_PAGES="${MAX_PAGES:-20}"           # safety cap
+
+DELTA=$((DAYS*24*60*60))
+BASE='https://apps.fedoraproject.org/datagrepper/v2/search'
+Q="delta=${DELTA}&topic=org.fedoraproject.prod.pagure.pull-request.new&rows_per_page=100&order=desc&chrome=false"
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+
+# 1) Fetch first page (JSON)
+first="${workdir}/page-1.json"
+command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=1" > "${first}"
+sed -i 's/%$//' "${first}" || true
+
+PAGES=$(jq -r '.pages // .pagination.pages // 1' "${first}")
+[[ "$PAGES" -gt "$MAX_PAGES" ]] && PAGES="$MAX_PAGES"
+
+# 2) Fetch remaining pages
+for ((i=2;i<=PAGES;i++)); do
+  f="${workdir}/page-${i}.json"
+  command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=${i}" > "${f}"
+  sed -i 's/%$//' "${f}" || true
+done
+
+# 3) Extract authored rpms/* PR links (unique)
+jq -s -r --arg u "${USER_NAME}" --arg ns "${NS_FILTER}" '
+  map(.raw_messages[]?)
+  | map(select(
+      .body.pullrequest
+      and .body.pullrequest.project?.namespace==$ns
+      and (
+        .body.pullrequest.user?.name==$u
+        or ((.body.pullrequest.repo_from?.fullname // "") | tostring | startswith("forks/" + $u + "/"))
+      )
+    ))
+  | map(.body.pullrequest.full_url)
+  | .[]
+' "${workdir}"/page-*.json \
+| sort -u > "${workdir}/pr_urls.txt"
+
+cat "${workdir}/pr_urls.txt"
+exit 0
+
+# If no URLs, exit quietly
+[[ ! -s "${workdir}/pr_urls.txt" ]] && exit 0
+
+# 4) Summarize each PR, compute diff size, and print nested list sorted by diff
+summarize_and_print() {
+  infile="$1"; tmpdir="$2"
+  # Build a sortable TSV: total  adds  dels  repo_short  title  url
+  while IFS= read -r url; do
+    [[ -z "$url" ]] && continue
+    ns=$(awk -F'/' '{print $4}' <<<"$url")
+    name=$(awk -F'/' '{print $5}' <<<"$url")
+    prid=$(awk -F'/' '{print $7}' <<<"$url" | sed 's#[^0-9].*##')
+
+    api="https://src.fedoraproject.org/api/0/${ns}/${name}/pull-request/${prid}"
+    prjson="$(command curl -sS -H 'Accept: application/json' "$api" || true)"
+    repo_short="$(jq -r '.project.name // ""'  <<<"$prjson" 2>/dev/null || echo "$name")"
+    title="$(jq -r '.title // ""'             <<<"$prjson" 2>/dev/null || echo "")"
+
+    patchfile="${tmpdir}/patch-${ns}-${name}-${prid}.patch"
+    if ! command curl -fsS --compressed -L "${url}.patch" -o "${patchfile}" ; then
+      command curl -fsS --compressed -L "${url}?format=patch" -o "${patchfile}" || : > "${patchfile}"
+    fi
+
+    # Count adds/dels; ignore header lines like +++/---/diff/index
+    adds=$(grep -E '^\+'  "${patchfile}" | grep -Ev '^\+\+\+|^diff |^index ' | wc -l | awk '{print $1}')
+    dels=$(grep -E '^-'  "${patchfile}" | grep -Ev '^---|^diff |^index ' | wc -l | awk '{print $1}')
+    total=$((adds + dels))
+
+    printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
+      "$total" "$adds" "$dels" "$repo_short" "$title" "$url"
+  done < "$infile" \
+  | sort -nr -k1,1 \
+  | awk -F '\t' '{ printf(" - %s: %s\n   - %s\n", $4, $5, $6) }'
+}
+
+summarize_and_print "${workdir}/pr_urls.txt" "${workdir}"

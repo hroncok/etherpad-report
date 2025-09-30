@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# List GitLab.com merge requests opened by a user in the last N days (default 7), URLs only.
+set -euo pipefail
+
+GL_USER="${GL_USER:-hroncok}"      # GitLab username
+DAYS="${DAYS:-7}"                  # Lookback window (days)
+GITLAB_TOKEN="${GITLAB_TOKEN:-}"   # Optional: personal access token
+
+SINCE_ISO="$(date -u -d "${DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+BASE='https://gitlab.com/api/v4/merge_requests'
+PER_PAGE=100
+
+hdrs=(-H 'Accept: application/json')
+if [[ -n "$GITLAB_TOKEN" ]]; then
+  hdrs+=(-H "Authorization: Bearer ${GITLAB_TOKEN}" -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+fi
+
+page=1
+while :; do
+  url="${BASE}?author_username=${GL_USER}&scope=all&state=all&created_after=${SINCE_ISO}&order_by=created_at&sort=desc&per_page=${PER_PAGE}&page=${page}"
+  resp="$(command curl -sS "${hdrs[@]}" "$url")"
+  cnt="$(jq 'length' <<<"$resp" 2>/dev/null || echo 0)"
+  [[ "$cnt" -eq 0 ]] && break
+  jq -r '.[].web_url' <<<"$resp"
+  (( page++ ))
+done

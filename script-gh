@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GH_USER="${GH_USER:-hroncok}"      # GitHub username
+DAYS="${DAYS:-7}"                  # Lookback window (days)
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"   # Optional: increases rate limit
+
+SINCE="$(date -u -d "${DAYS} days ago" +%Y-%m-%d)"
+BASE='https://api.github.com/search/issues'
+ACCEPT='application/vnd.github+json'
+COMMON="q=is:pr+author:${GH_USER}+created:%3E%3D${SINCE}&per_page=100&sort=created&order=desc"
+
+auth_hdr=()
+if [[ -n "$GITHUB_TOKEN" ]]; then
+  auth_hdr=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+fi
+
+page=1
+while :; do
+  url="${BASE}?${COMMON}&page=${page}"
+  resp="$(curl -sS -H "Accept: ${ACCEPT}" -H "X-GitHub-Api-Version: 2022-11-28" "${auth_hdr[@]}" "$url")"
+  count="$(jq -r '.items | length' <<<"$resp" 2>/dev/null || echo 0)"
+  [[ "$count" == "0" || -z "$count" ]] && break
+  jq -r '.items[].html_url' <<<"$resp"
+  (( page++ ))
+done
