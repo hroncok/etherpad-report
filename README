@@ -105,14 +105,23 @@ Summarization (one or two sentences)
   - Rebuilds (e.g., “Python 3.14.0rc3 bytecode”) → note as rebuild/compatibility when stated in allowed sources.
 - Write one or two sentences; avoid speculative verbs (e.g., “ensures”, “aims”) unless explicitly present in the allowed sources. Do not prefix with “Summary:”.
 
+Phrasing and citation style (strict)
+- Do not use meta-language like “the description says…”, “the PR mentions…”, or “according to the body…”.
+- Write declarative statements based only on the allowed inputs. Examples:
+  - Prefer “See rhbz#2366308, functionality was not verified.” over “The description references rhbz#2366308 and notes functionality was not verified.”
+  - Prefer “Useful when extras are built from a different specfile.” over “Initial description notes usefulness when extras are built from a different specfile.”
+  - Prefer “See <paste the exact link present in the PR>.” over “The PR references the packaging list discussion.”
+- Only include trackers/links that are explicitly present in the allowed inputs (title/body/commits). Do not invent or derive external links.
+- Keep phrasing minimal and factual; if details are absent, do not speculate.
+
 Grouping rules (merge related items)
 - Group PRs/MRs that are clearly the same fix across branches or forges:
   - Same package/repo family (e.g., GitHub “fedora-iot/rpm-head-signing” with Pagure “rpms/rpm-head-signing”), same CVE, same version bump, or near-identical titles that differ only by branch tags.
-  - Rebuilds for same resons (e.g. “Rebuilt for Python 3.14.0rc3 bytecode”).
+  - Rebuilds for same reasons (e.g. “Rebuilt for Python 3.14.0rc3 bytecode”).
 - For a grouped item:
   - Top-level bullet: “[PREFIX] repo-name (or consolidated label): short grouped title”; no need to say “grouped” in it.
   - Then list each related URL as its own sub-bullet; for Pagure include “[<branch>]” where known.
-  - Provide one two-sentence summary for the group. Don't explcilty say it's grouped together or why.
+  - Provide one two-sentence summary for the group. Don't explicitly say it's grouped together or why.
 - Otherwise keep as individual items.
 
 Sorting
