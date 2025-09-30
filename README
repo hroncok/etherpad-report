@@ -68,7 +68,7 @@ What to fetch per URL
     # MR metadata
     curl -sS -H 'Accept: application/json' \
       "https://gitlab.com/api/v4/projects/redhat%2Fcentos-stream%2Frpms%2Fpython-requests/merge_requests/20" \
-      | jq '{title:.title, url:.web_url, state:.state}'
+      | jq '{title:.title, url:.web_url, state:.state, target_branch:.target_branch}'
 
     # Commit messages
     curl -sS -H 'Accept: application/json' \
