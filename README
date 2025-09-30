@@ -19,6 +19,12 @@ What to fetch per URL
   - Extract: repo short name (last path segment), title (.title), web_url (.web_url), description (.description), state, source/target branch if available.
   - Diff size: try {MR_URL}.patch (fallback {MR_URL}.diff) and count lines as above.
 
+Setting PREFIX
+- For src.fedoraproject.org set the prefix to [F]
+- For gitlab.com/redhat (the redhat namespace on gitlab.com) set the prefix to [R]
+- For other gitlab.com namespaces and github.com set the prefix to [U]
+- For grouped items, combine the prefixes with plus, e.g. [F+R]
+
 Summarization (one or two sentences)
 - Use title + description/initial_comment/body to explain what changed and why.
 - Recognize patterns:
@@ -33,9 +39,9 @@ Grouping rules (merge related items)
   - Same package/repo family (e.g., GitHub “fedora-iot/rpm-head-signing” with Pagure “rpms/rpm-head-signing”), same CVE, same version bump, or near-identical titles that differ only by branch tags.
   - Rebuilds for same resons (e.g. “Rebuilt for Python 3.14.0rc3 bytecode”).
 - For a grouped item:
-  - Top-level bullet: “repo-name (or consolidated label): short grouped title”
+  - Top-level bullet: “[PREFIX] repo-name (or consolidated label): short grouped title”; no need to say “grouped” in it.
   - Then list each related URL as its own sub-bullet; for Pagure include “[<branch>]” where known.
-  - Provide one two-sentence summary for the group.
+  - Provide one two-sentence summary for the group. Don't explcilty say it's grouped together or why.
 - Otherwise keep as individual items.
 
 Sorting
@@ -45,13 +51,13 @@ Sorting
 Output format
 - No tables. Use a nested markdown list with visible URLs. Do not include diff numbers.
 - For a single PR/MR:
-  - repo-name: title
+  - [PREFIX] repo-name: title
     - URL
     - Sentence 1. Sentence 2
 - For a grouped item:
-  - repo-name (grouped): short title
-    - URL_1 [branch: <branch>] (when known)
-    - URL_2 [branch: <branch>]
+  - [PREFIX] repo-name: short title
+    - URL_1 [<branch>] (when known)
+    - URL_2 [<branch>]
     - Sentence 1. Sentence 2.
 - Do not add any extra “Reference:” bullets or explanatory text.
 
