@@ -8,16 +8,86 @@ What to fetch per URL
 - Pagure (src.fedoraproject.org):
   - API: https://src.fedoraproject.org/api/0/{namespace}/{name}/pull-request/{id}
   - Extract: repo short name (.project.name), title (.title), branch (.branch), full_url (.full_url), status (.status), initial_comment (.initial_comment).
+  - Commits: if needed, infer commit messages from the {PR_URL}.patch headers (subject lines) only; do not read other repository files.
   - Diff size: fetch {PR_URL}.patch (fallback {PR_URL}?format=patch), count additions/deletions (lines starting with “+”/“-”, ignore headers like “diff ”, “index ”, “+++”, “---”). Size = adds + dels.
+  - Examples:
+    ```bash
+    # PR metadata
+    curl -sS -H 'Accept: application/json' \
+      https://src.fedoraproject.org/api/0/rpms/foo/pull-request/123 \
+      | jq '{title:.title, branch:.branch, url:.full_url, status:.status}'
+
+    # Commit subject lines from the patch (best-effort)
+    curl -sS https://src.fedoraproject.org/rpms/foo/pull-request/123.patch \
+      | grep '^Subject:' || true
+
+    # Diff size (adds+deletes)
+    curl -sS https://src.fedoraproject.org/rpms/foo/pull-request/123.patch \
+      | awk 'BEGIN{a=0;d=0} 
+             /^diff |^index |^\+\+\+|^---/ {next}
+             /^\+[^+]/ {a++} 
+             /^-[^-]/ {d++} 
+             END{print a+d}'
+    ```
 - GitHub (github.com):
   - API: https://api.github.com/repos/{owner}/{repo}/pulls/{number} (Accept: application/vnd.github+json)
   - Extract: repo (.base.repo.full_name), title (.title), html_url (.html_url), state/merged_at, additions (.additions), deletions (.deletions), body (.body).
+  - Commits: https://api.github.com/repos/{owner}/{repo}/pulls/{number}/commits → collect commit messages (.commit.message).
   - Diff size: prefer additions+deletions from API; if missing, use {PR_URL}.patch and count lines as above.
+  - Examples:
+    ```bash
+    # PR metadata (includes additions/deletions)
+    curl -sS -H 'Accept: application/vnd.github+json' \
+      https://api.github.com/repos/owner/repo/pulls/123 \
+      | jq '{title:.title, url:.html_url, adds:.additions, dels:.deletions}'
+
+    # Commit messages
+    curl -sS -H 'Accept: application/vnd.github+json' \
+      https://api.github.com/repos/owner/repo/pulls/123/commits \
+      | jq -r '.[].commit.message'
+
+    # Fallback diff size via patch
+    curl -sS https://github.com/owner/repo/pull/123.patch \
+      | awk 'BEGIN{a=0;d=0} 
+             /^diff |^index |^\+\+\+|^---/ {next}
+             /^\+[^+]/ {a++} 
+             /^-[^-]/ {d++} 
+             END{print a+d}'
+    ```
 - GitLab (gitlab.com):
   - API: https://gitlab.com/api/v4/projects/{url-encoded project path}/merge_requests/{iid}
     - Project path is the segment before “/-/merge_requests/” (URL-encode fully).
   - Extract: repo short name (last path segment), title (.title), web_url (.web_url), description (.description), state, source/target branch if available.
+  - Commits: https://gitlab.com/api/v4/projects/{url-encoded project path}/merge_requests/{iid}/commits → collect commit messages (.message).
   - Diff size: try {MR_URL}.patch (fallback {MR_URL}.diff) and count lines as above.
+  - Examples:
+    ```bash
+    # Suppose project path is redhat/centos-stream/rpms/python-requests → URL-encode as:
+    # redhat%2Fcentos-stream%2Frpms%2Fpython-requests
+
+    # MR metadata
+    curl -sS -H 'Accept: application/json' \
+      "https://gitlab.com/api/v4/projects/redhat%2Fcentos-stream%2Frpms%2Fpython-requests/merge_requests/20" \
+      | jq '{title:.title, url:.web_url, state:.state}'
+
+    # Commit messages
+    curl -sS -H 'Accept: application/json' \
+      "https://gitlab.com/api/v4/projects/redhat%2Fcentos-stream%2Frpms%2Fpython-requests/merge_requests/20/commits" \
+      | jq -r '.[].message'
+
+    # Diff size via patch
+    curl -sS https://gitlab.com/redhat/centos-stream/rpms/python-requests/-/merge_requests/20.patch \
+      | awk 'BEGIN{a=0;d=0} 
+             /^diff |^index |^\+\+\+|^---/ {next}
+             /^\+[^+]/ {a++} 
+             /^-[^-]/ {d++} 
+             END{print a+d}'
+    ```
+
+Data-source constraints (strict)
+- Allowed inputs for summaries: PR/MR title, initial description/body, commit messages for that PR/MR, and the diff content.
+- Forbidden inputs: repository files (README, docs), issues, discussions outside the initial description, other PRs/MRs, project websites, external documentation, or prior/model knowledge.
+- If information is insufficient, produce a minimal factual summary based only on the allowed inputs; do not infer rationale or effects beyond what is stated.
 
 Setting PREFIX
 - For src.fedoraproject.org set the prefix to [F]
@@ -26,13 +96,14 @@ Setting PREFIX
 - For grouped items, combine the prefixes with plus, e.g. [F+R]
 
 Summarization (one or two sentences)
-- Use title + description/initial_comment/body to explain what changed and why.
+- Use only these sources: title, initial description/body, commit messages from the PR/MR, and the diff.
+- Do not use any other project context (README, issues, other PRs/MRs, wiki, external docs) or prior knowledge.
 - Recognize patterns:
   - “Update to X” → mention new version.
-  - “FF-merge”/“Forward merge” → note target branch and purpose.
-  - CVEs (CVE-YYYY-NNNNN) → call out as security fix.
-  - Rebuilds for something (e.g., “Python 3.14.0rc3 bytecode””) → consider minor, group together with similar rebuilds.
-- Write one or two sentences. Do not prefix with “Summary:”.
+  - “FF-merge”/“Forward merge” → note target branch and purpose if stated in allowed sources.
+  - CVEs (CVE-YYYY-NNNNN) → call out as a security fix verbatim.
+  - Rebuilds (e.g., “Python 3.14.0rc3 bytecode”) → note as rebuild/compatibility when stated in allowed sources.
+- Write one or two sentences; avoid speculative verbs (e.g., “ensures”, “aims”) unless explicitly present in the allowed sources. Do not prefix with “Summary:”.
 
 Grouping rules (merge related items)
 - Group PRs/MRs that are clearly the same fix across branches or forges:
@@ -65,5 +136,6 @@ Edge cases
 - If an API/patch fetch fails, still include the item using the title and URL; treat size as unknown.
 - Strip any leading “@” from URLs.
 - Keep the output concise and factual.
+- Never infer motivations, performance impact, or security status unless explicitly present in the allowed inputs. If details are missing, prefer a conservative, factual phrasing (e.g., “Update to X” or “Backport of Y to branch Z”).
 
 Return only the final markdown list, nothing else.
