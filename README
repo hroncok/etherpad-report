@@ -1,10 +1,23 @@
-You will receive a mixed list of PR/MR URLs from three forges: src.fedoraproject.org (Pagure), github.com (GitHub), and gitlab.com (GitLab). Produce a single consolidated, grouped report as specified below.
+You will receive a single JSON array with PR/MR data from three forges: src.fedoraproject.org (Pagure), github.com (GitHub), and gitlab.com (GitLab). Produce a single consolidated, grouped report as specified below. Do not fetch any external data.
 
 Input
-- Next message will contain URLs, one per line. Some lines may start with @; strip it.
-- Only process valid PR/MR URLs from the three forges.
+- Next message will contain a JSON array. Each element is one PR/MR with fields (some may be empty):
+  - forge: "pagure" | "github" | "gitlab"
+  - prefix: "[F]" | "[R]" | "[U]"
+  - repo: repository short name or full name
+  - title: PR/MR title
+  - url: PR/MR HTML URL
+  - state: open/closed/merged (as provided)
+  - merged_at: timestamp when merged (may be empty)
+  - target_branch: target branch name when available
+  - source_branch: source branch name when available
+  - adds: integer additions in diff
+  - dels: integer deletions in diff
+  - total: integer additions + deletions
+  - body: initial description/body text (string, may be empty)
+  - commits: array of commit message strings
 
-What to fetch per URL
+What to fetch per URL -- use curl calls as indicated in the included exmples.
 - Pagure (src.fedoraproject.org):
   - API: https://src.fedoraproject.org/api/0/{namespace}/{name}/pull-request/{id}
   - Extract: repo short name (.project.name), title (.title), branch (.branch), full_url (.full_url), status (.status), initial_comment (.initial_comment).
@@ -85,15 +98,12 @@ What to fetch per URL
     ```
 
 Data-source constraints (strict)
-- Allowed inputs for summaries: PR/MR title, initial description/body, commit messages for that PR/MR, and the diff content.
-- Forbidden inputs: repository files (README, docs), issues, discussions outside the initial description, other PRs/MRs, project websites, external documentation, or prior/model knowledge.
-- If information is insufficient, produce a minimal factual summary based only on the allowed inputs; do not infer rationale or effects beyond what is stated.
+- Allowed inputs for summaries: title, body, commit messages for that PR/MR, and the provided totals for sorting.
+- Forbidden inputs: any network fetches, repository files (README, docs), issues, discussions outside the initial description, other PRs/MRs, project websites, external documentation, or prior/model knowledge.
+- If information is insufficient, produce a minimal factual summary based only on the provided fields; do not infer rationale or effects beyond what is stated.
 
 Setting PREFIX
-- For src.fedoraproject.org set the prefix to [F]
-- For gitlab.com/redhat (the redhat namespace on gitlab.com) set the prefix to [R]
-- For other gitlab.com namespaces and github.com set the prefix to [U]
-- For grouped items, combine the prefixes with plus, e.g. [F+R]
+- Use the provided prefix for each item. For grouped items, combine with plus, e.g. [F+R].
 
 Summarization (one or two sentences)
 - Use only these sources: title, initial description/body, commit messages from the PR/MR, and the diff.
@@ -125,8 +135,7 @@ Grouping rules (merge related items)
 - Otherwise keep as individual items.
 
 Sorting
-- Sort top-level items by largest diff size first (descending).
-- If diff size is unknown, place after all known-size items, preserving input order among unknowns.
+- Sort top-level items by largest total first (descending). If total is missing, place after all known-size items, preserving input order among unknowns.
 
 Output format
 - No tables. Use a nested markdown list with visible URLs. Do not include diff numbers.

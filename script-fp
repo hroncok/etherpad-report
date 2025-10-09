@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Collect rpms/* PRs authored by USER_NAME in the last DAYS, compute diff size,
-# and print a nested list sorted by largest diff:
-#  - <repo-name>: <title>
-#    - <url>
+# Collect Pagure PRs authored by USER_NAME in the last DAYS, and emit structured JSON per PR.
 
 set -euo pipefail
 export LANG=C.utf-8
 
 # Config
-DAYS="${DAYS:-14}"                     # e.g. 7 or 14
+DAYS="${DAYS:-7}"                     # e.g. 7 or 14
 USER_NAME="${USER_NAME:-churchyard}"   # PR author
 NS_FILTER="${NS_FILTER:-rpms}"         # namespace filter
 MAX_PAGES="${MAX_PAGES:-20}"           # safety cap
@@ -22,16 +19,16 @@ trap 'rm -rf "$workdir"' EXIT
 
 # 1) Fetch first page (JSON)
 first="${workdir}/page-1.json"
-command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=1" > "${first}"
+command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=1" > "${first}" || true
 sed -i 's/%$//' "${first}" || true
 
-PAGES=$(jq -r '.pages // .pagination.pages // 1' "${first}")
+PAGES="$(jq -r '.pages // .pagination.pages // 1' "${first}" 2>/dev/null || echo 1)"
 [[ "$PAGES" -gt "$MAX_PAGES" ]] && PAGES="$MAX_PAGES"
 
 # 2) Fetch remaining pages
 for ((i=2;i<=PAGES;i++)); do
   f="${workdir}/page-${i}.json"
-  command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=${i}" > "${f}"
+  command curl -s -H 'Accept: application/json' "${BASE}?${Q}&page=${i}" > "${f}" || true
   sed -i 's/%$//' "${f}" || true
 done
 
@@ -49,44 +46,86 @@ jq -s -r --arg u "${USER_NAME}" --arg ns "${NS_FILTER}" '
   | map(.body.pullrequest.full_url)
   | .[]
 ' "${workdir}"/page-*.json \
-| sort -u > "${workdir}/pr_urls.txt"
+| sort -u > "${workdir}/pr_urls.txt" || true
 
-cat "${workdir}/pr_urls.txt"
-exit 0
+# If no URLs, emit empty array
+if [[ ! -s "${workdir}/pr_urls.txt" ]]; then
+  echo '[]'
+  exit 0
+fi
 
-# If no URLs, exit quietly
-[[ ! -s "${workdir}/pr_urls.txt" ]] && exit 0
+out_jsonl="${workdir}/items.jsonl"
+> "$out_jsonl"
 
-# 4) Summarize each PR, compute diff size, and print nested list sorted by diff
-summarize_and_print() {
-  infile="$1"; tmpdir="$2"
-  # Build a sortable TSV: total  adds  dels  repo_short  title  url
-  while IFS= read -r url; do
-    [[ -z "$url" ]] && continue
-    ns=$(awk -F'/' '{print $4}' <<<"$url")
-    name=$(awk -F'/' '{print $5}' <<<"$url")
-    prid=$(awk -F'/' '{print $7}' <<<"$url" | sed 's#[^0-9].*##')
+while IFS= read -r url; do
+  [[ -z "$url" ]] && continue
+  ns=$(awk -F'/' '{print $4}' <<<"$url")
+  name=$(awk -F'/' '{print $5}' <<<"$url")
+  prid=$(awk -F'/' '{print $7}' <<<"$url" | sed 's#[^0-9].*##')
 
-    api="https://src.fedoraproject.org/api/0/${ns}/${name}/pull-request/${prid}"
-    prjson="$(command curl -sS -H 'Accept: application/json' "$api" || true)"
-    repo_short="$(jq -r '.project.name // ""'  <<<"$prjson" 2>/dev/null || echo "$name")"
-    title="$(jq -r '.title // ""'             <<<"$prjson" 2>/dev/null || echo "")"
+  api="https://src.fedoraproject.org/api/0/${ns}/${name}/pull-request/${prid}"
+  prjson="$(command curl -sS -H 'Accept: application/json' "$api" || true)"
+  repo_short="$(jq -r '.project.name // ""'  <<<"$prjson" 2>/dev/null || echo "$name")"
+  title="$(jq -r '.title // ""'             <<<"$prjson" 2>/dev/null || echo "")"
+  status="$(jq -r '.status // ""'            <<<"$prjson" 2>/dev/null || echo "")"
+  branch="$(jq -r '.branch // ""'            <<<"$prjson" 2>/dev/null || echo "")"
+  full_url="$(jq -r '.full_url // ""'        <<<"$prjson" 2>/dev/null || echo "$url")"
+  initial_comment="$(jq -r '.initial_comment // ""' <<<"$prjson" 2>/dev/null || echo "")"
 
-    patchfile="${tmpdir}/patch-${ns}-${name}-${prid}.patch"
-    if ! command curl -fsS --compressed -L "${url}.patch" -o "${patchfile}" ; then
-      command curl -fsS --compressed -L "${url}?format=patch" -o "${patchfile}" || : > "${patchfile}"
-    fi
+  # Patch for diff stats and commit subjects
+  patchfile="${workdir}/patch-${ns}-${name}-${prid}.patch"
+  if ! command curl -fsS --compressed -L "${url}.patch" -o "${patchfile}" ; then
+    command curl -fsS --compressed -L "${url}?format=patch" -o "${patchfile}" || : > "${patchfile}"
+  fi
 
-    # Count adds/dels; ignore header lines like +++/---/diff/index
-    adds=$(grep -E '^\+'  "${patchfile}" | grep -Ev '^\+\+\+|^diff |^index ' | wc -l | awk '{print $1}')
-    dels=$(grep -E '^-'  "${patchfile}" | grep -Ev '^---|^diff |^index ' | wc -l | awk '{print $1}')
-    total=$((adds + dels))
+  # Compute adds/dels robustly (no reliance on IFS or read exit code)
+  stats="$(awk '
+    BEGIN{a=0;d=0}
+    /^diff |^index |^\+\+\+|^---/ {next}
+    /^\+[^+]/ {a++}
+    /^-[^-]/ {d++}
+    END{printf "%d %d", a, d}
+  ' "${patchfile}" || true)"
+  if [[ -z "$stats" ]]; then
+    adds=0
+    dels=0
+  else
+    adds="${stats%% *}"
+    dels="${stats#* }"
+  fi
+  # Commit subjects may be missing; tolerate no matches
+  commits_msgs=$(grep '^Subject:' "${patchfile}" | sed 's/^Subject: //' || true)
 
-    printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
-      "$total" "$adds" "$dels" "$repo_short" "$title" "$url"
-  done < "$infile" \
-  | sort -nr -k1,1 \
-  | awk -F '\t' '{ printf(" - %s: %s\n   - %s\n", $4, $5, $6) }'
-}
+  jq -n --arg forge pagure \
+        --arg prefix "[F]" \
+        --arg repo "$repo_short" \
+        --arg title "$title" \
+        --arg url "$full_url" \
+        --arg state "$status" \
+        --arg target_branch "$branch" \
+        --arg body "$initial_comment" \
+        --arg adds "$adds" \
+        --arg dels "$dels" \
+        --arg commits_str "$commits_msgs" '
+    {
+      forge: $forge,
+      prefix: $prefix,
+      repo: $repo,
+      title: $title,
+      url: $url,
+      state: $state,
+      target_branch: $target_branch,
+      adds: ($adds|tonumber),
+      dels: ($dels|tonumber),
+      total: (($adds|tonumber)+($dels|tonumber)),
+      body: $body,
+      commits: ($commits_str | split("\n") | map(select(length>0)))
+    }
+  ' >> "$out_jsonl" || true
+done < "${workdir}/pr_urls.txt"
 
-summarize_and_print "${workdir}/pr_urls.txt" "${workdir}"
+if [[ -s "$out_jsonl" ]]; then
+  jq -s '.' "$out_jsonl" || echo '[]'
+else
+  echo '[]'
+fi

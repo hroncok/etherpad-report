@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# List GitLab.com merge requests opened by a user in the last N days (default 7), URLs only.
+# Emit GitLab.com merge requests opened by a user in the last N days as structured JSON.
 set -euo pipefail
 
 GL_USER="${GL_USER:-hroncok}"      # GitLab username
@@ -15,12 +15,85 @@ if [[ -n "$GITLAB_TOKEN" ]]; then
   hdrs+=(-H "Authorization: Bearer ${GITLAB_TOKEN}" -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
 fi
 
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+out_jsonl="${tmpdir}/items.jsonl"
+> "$out_jsonl"
+
 page=1
 while :; do
   url="${BASE}?author_username=${GL_USER}&scope=all&state=all&created_after=${SINCE_ISO}&order_by=created_at&sort=desc&per_page=${PER_PAGE}&page=${page}"
   resp="$(command curl -sS "${hdrs[@]}" "$url")"
   cnt="$(jq 'length' <<<"$resp" 2>/dev/null || echo 0)"
   [[ "$cnt" -eq 0 ]] && break
-  jq -r '.[].web_url' <<<"$resp"
+
+  mapfile -t mrs < <(jq -r '.[] | @base64' <<<"$resp")
+  for b in "${mrs[@]}"; do
+    item_json="$(echo "$b" | base64 -d)"
+    web_url="$(jq -r '.web_url // empty' <<<"$item_json")"
+    title="$(jq -r '.title // ""' <<<"$item_json")"
+    description="$(jq -r '.description // ""' <<<"$item_json")"
+    state="$(jq -r '.state // ""' <<<"$item_json")"
+    target_branch="$(jq -r '.target_branch // ""' <<<"$item_json")"
+    source_branch="$(jq -r '.source_branch // ""' <<<"$item_json")"
+    project_path="$(jq -r '.references.full // ""' <<<"$item_json" | awk -F'!' '{print $1}')"
+    iid="$(jq -r '.iid // empty' <<<"$item_json")"
+    repo_short="$(jq -r '.references.short // empty' <<<"$item_json" | awk -F'!' '{print $1}' | awk -F'/' '{print $NF}')"
+
+    # Compute adds/dels from patch
+    patchfile="${tmpdir}/$(echo "$project_path" | tr '/' '_')_${iid}.patch"
+    if ! command curl -fsS --compressed -L "${web_url}.patch" -o "$patchfile" ; then
+      command curl -fsS --compressed -L "${web_url}.diff" -o "$patchfile" || : > "$patchfile"
+    fi
+    adds=$(grep -E '^\+'  "$patchfile" | grep -Ev '^\+\+\+|^diff |^index ' | wc -l | awk '{print $1}')
+    dels=$(grep -E '^-'  "$patchfile" | grep -Ev '^---|^diff |^index ' | wc -l | awk '{print $1}')
+
+    # Commits
+    enc_path="$(python3 - "$project_path" <<'PY'
+import urllib.parse, sys
+print(urllib.parse.quote(sys.argv[1], safe=''))
+PY
+)"
+    commits_api="https://gitlab.com/api/v4/projects/${enc_path}/merge_requests/${iid}/commits"
+    commits_json="$(command curl -sS "${hdrs[@]}" "$commits_api" || true)"
+    commits_msgs=$(jq -r '.[].message // empty' <<<"$commits_json")
+
+    # Determine prefix: [R] for gitlab.com/redhat/*, else [U]
+    prefix_val="[U]"
+    if [[ "$web_url" == https://gitlab.com/redhat/* ]]; then
+      prefix_val="[R]"
+    fi
+
+    jq -n --arg forge gitlab \
+          --arg prefix "$prefix_val" \
+          --arg repo "$repo_short" \
+          --arg title "$title" \
+          --arg url "$web_url" \
+          --arg state "$state" \
+          --arg target_branch "$target_branch" \
+          --arg source_branch "$source_branch" \
+          --arg description "$description" \
+          --arg adds "$adds" \
+          --arg dels "$dels" \
+          --arg commits_str "$commits_msgs" '
+      {
+        forge: $forge,
+        prefix: $prefix,
+        repo: $repo,
+        title: $title,
+        url: $url,
+        state: $state,
+        target_branch: $target_branch,
+        source_branch: $source_branch,
+        adds: ($adds|tonumber),
+        dels: ($dels|tonumber),
+        total: (($adds|tonumber)+($dels|tonumber)),
+        body: $description,
+        commits: ($commits_str | split("\n") | map(select(length>0)))
+      }
+    ' >> "$out_jsonl"
+  done
   (( page++ ))
 done
+
+jq -s '.' "$out_jsonl"

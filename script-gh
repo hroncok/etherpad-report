@@ -15,12 +15,72 @@ if [[ -n "$GITHUB_TOKEN" ]]; then
   auth_hdr=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 fi
 
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+out_jsonl="${tmpdir}/items.jsonl"
+> "$out_jsonl"
+
 page=1
 while :; do
   url="${BASE}?${COMMON}&page=${page}"
   resp="$(curl -sS -H "Accept: ${ACCEPT}" -H "X-GitHub-Api-Version: 2022-11-28" "${auth_hdr[@]}" "$url")"
   count="$(jq -r '.items | length' <<<"$resp" 2>/dev/null || echo 0)"
   [[ "$count" == "0" || -z "$count" ]] && break
-  jq -r '.items[].html_url' <<<"$resp"
+
+  # Iterate PRs from search results
+  mapfile -t pr_api_urls < <(jq -r '.items[].pull_request.url // empty' <<<"$resp")
+  for pr_api in "${pr_api_urls[@]}"; do
+    [[ -z "$pr_api" ]] && continue
+    pr_json="$(curl -sS -H "Accept: ${ACCEPT}" -H "X-GitHub-Api-Version: 2022-11-28" "${auth_hdr[@]}" "$pr_api" || true)"
+
+    html_url="$(jq -r '.html_url // empty' <<<"$pr_json")"
+    title="$(jq -r '.title // ""' <<<"$pr_json")"
+    body="$(jq -r '.body // ""' <<<"$pr_json")"
+    state="$(jq -r '.state // ""' <<<"$pr_json")"
+    merged_at="$(jq -r '.merged_at // ""' <<<"$pr_json")"
+    adds="$(jq -r '.additions // 0' <<<"$pr_json")"
+    dels="$(jq -r '.deletions // 0' <<<"$pr_json")"
+    repo_full="$(jq -r '.base.repo.full_name // ""' <<<"$pr_json")"
+    target_branch="$(jq -r '.base.ref // ""' <<<"$pr_json")"
+
+    # Commits
+    commits_api="${pr_api}/commits"
+    commits_json="$(curl -sS -H "Accept: ${ACCEPT}" -H "X-GitHub-Api-Version: 2022-11-28" "${auth_hdr[@]}" "$commits_api" || true)"
+    # Collect commit messages (first line of each message)
+    commits_msgs=$(jq -r '.[].commit.message // empty' <<<"$commits_json" | awk 'BEGIN{RS=""} {print}' | sed 's/\r$//' ) || commits_msgs=""
+
+    # Build JSON object
+    jq -n --arg forge github \
+          --arg prefix "[U]" \
+          --arg repo "$repo_full" \
+          --arg title "$title" \
+          --arg url "$html_url" \
+          --arg state "$state" \
+          --arg merged_at "$merged_at" \
+          --arg target_branch "$target_branch" \
+          --arg body "$body" \
+          --arg adds "$adds" \
+          --arg dels "$dels" \
+          --arg commits_str "$commits_msgs" '
+      {
+        forge: $forge,
+        prefix: $prefix,
+        repo: $repo,
+        title: $title,
+        url: $url,
+        state: $state,
+        merged_at: $merged_at,
+        target_branch: $target_branch,
+        adds: ($adds|tonumber),
+        dels: ($dels|tonumber),
+        total: (($adds|tonumber)+($dels|tonumber)),
+        body: $body,
+        commits: ($commits_str | split("\n") | map(select(length>0)))
+      }
+    ' >> "$out_jsonl"
+  done
   (( page++ ))
 done
+
+# Emit as a single JSON array
+jq -s '.' "$out_jsonl"
