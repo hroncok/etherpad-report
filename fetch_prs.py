@@ -34,6 +34,16 @@ import urllib3
 
 # ---------- HTTP helpers ----------
 
+def log_warn(msg: str) -> None:
+    sys.stderr.write(f"WARN: {msg}\n")
+    sys.stderr.flush()
+
+
+def log_error(msg: str) -> None:
+    sys.stderr.write(f"ERROR: {msg}\n")
+    sys.stderr.flush()
+
+
 def make_pool() -> urllib3.PoolManager:
     return urllib3.PoolManager(
         num_pools=10,
@@ -156,9 +166,11 @@ def fetch_gitlab(pool: urllib3.PoolManager, gl_user: str, days: int, token: Opti
             try:
                 patch_text = http_get_text(pool, f"{web_url}.patch")
             except Exception:
+                log_warn(f"gitlab: failed to fetch patch for {web_url} (.patch), trying .diff")
                 try:
                     patch_text = http_get_text(pool, f"{web_url}.diff")
                 except Exception:
+                    log_warn(f"gitlab: failed to fetch patch/diff for {web_url}, size set to 0")
                     patch_text = ""
             adds, dels = count_patch_adds_dels(patch_text)
 
@@ -173,6 +185,7 @@ def fetch_gitlab(pool: urllib3.PoolManager, gl_user: str, days: int, token: Opti
                         if isinstance(c, dict) and c.get("message"):
                             commits_msgs.append(str(c["message"]))
             except Exception:
+                log_warn(f"gitlab: failed to fetch commits for {web_url}")
                 commits_msgs = []
 
             prefix = "[R]" if web_url.startswith("https://gitlab.com/redhat/") else "[U]"
@@ -230,6 +243,7 @@ def fetch_github(pool: urllib3.PoolManager, gh_user: str, days: int, token: Opti
             try:
                 pr_json = http_get_json(pool, pr_api, headers)
             except Exception:
+                log_warn(f"github: failed to fetch PR metadata {pr_api}")
                 continue
             if not isinstance(pr_json, dict):
                 continue
@@ -260,6 +274,7 @@ def fetch_github(pool: urllib3.PoolManager, gh_user: str, days: int, token: Opti
                         if isinstance(msg, str) and msg:
                             commits_msgs.append(msg)
             except Exception:
+                log_warn(f"github: failed to fetch commits for {html_url or pr_api}")
                 commits_msgs = []
 
             items.append(
@@ -316,6 +331,7 @@ def fetch_pagure(pool: urllib3.PoolManager, user_name: str, days: int, ns_filter
         try:
             page_json = http_get_json(pool, url, {"Accept": "application/json"})
         except Exception:
+            log_warn(f"pagure: failed to fetch datagrepper page {i}")
             page_json = None
         if page_json is not None:
             all_pages.append(page_json)
@@ -358,6 +374,7 @@ def fetch_pagure(pool: urllib3.PoolManager, user_name: str, days: int, ns_filter
         try:
             prjson = http_get_json(pool, api, {"Accept": "application/json"})
         except Exception:
+            log_warn(f"pagure: failed to fetch PR metadata {api}")
             prjson = None
         repo_short = str((prjson or {}).get("project", {}).get("name") or name)
         title = str((prjson or {}).get("title") or "")
@@ -374,6 +391,7 @@ def fetch_pagure(pool: urllib3.PoolManager, user_name: str, days: int, ns_filter
             try:
                 patch_text = http_get_text(pool, f"{url}?format=patch")
             except Exception:
+                log_warn(f"pagure: failed to fetch patch for {url}, size set to 0")
                 patch_text = ""
         adds, dels = count_patch_adds_dels(patch_text)
         # commit subjects from 'Subject:' lines
@@ -422,22 +440,27 @@ def main() -> int:
     pool = make_pool()
 
     all_items: List[Dict] = []
+    had_fatal_error = False
     try:
         all_items.extend(fetch_pagure(pool, fp_user, days, ns_filter, max_pages))
-    except Exception:
-        pass
+    except Exception as e:
+        log_error(f"pagure: {e}")
+        had_fatal_error = True
     try:
         all_items.extend(fetch_github(pool, gh_user, days, gh_token))
-    except Exception:
-        pass
+    except Exception as e:
+        log_error(f"github: {e}")
+        had_fatal_error = True
     try:
         all_items.extend(fetch_gitlab(pool, gl_user, days, gl_token))
-    except Exception:
-        pass
+    except Exception as e:
+        log_error(f"gitlab: {e}")
+        had_fatal_error = True
 
     sys.stdout.write(json.dumps(all_items, ensure_ascii=False, indent=4))
     sys.stdout.flush()
-    return 0
+    # If any forge failed entirely, signal non-zero exit to report as broken
+    return 1 if had_fatal_error else 0
 
 
 if __name__ == "__main__":
