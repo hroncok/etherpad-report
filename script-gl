@@ -6,13 +6,31 @@ GL_USER="${GL_USER:-hroncok}"      # GitLab username
 DAYS="${DAYS:-7}"                  # Lookback window (days)
 GITLAB_TOKEN="${GITLAB_TOKEN:-}"   # Optional: personal access token
 
-SINCE_ISO="$(date -u -d "${DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+SINCE_ISO="$(date -u -d "${DAYS} days ago 00:00:00" +%Y-%m-%dT%H:%M:%SZ)"
 BASE='https://gitlab.com/api/v4/merge_requests'
 PER_PAGE=100
 
 hdrs=(-H 'Accept: application/json')
 if [[ -n "$GITLAB_TOKEN" ]]; then
   hdrs+=(-H "Authorization: Bearer ${GITLAB_TOKEN}" -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}")
+fi
+
+# Determine author filtering
+if [[ -n "${GL_USER}" ]]; then
+  # Resolve user ID for reliable filtering
+  u_resp="$(command curl -sS "${hdrs[@]}" "https://gitlab.com/api/v4/users?username=${GL_USER}")"
+  user_id="$(jq -r '.[0].id // empty' <<<"$u_resp")"
+  if [[ -z "$user_id" ]]; then
+    echo "error: Could not resolve GitLab user id for username '${GL_USER}'" >&2
+    exit 1
+  fi
+  AUTHOR_Q="author_id=${user_id}&scope=all"
+elif [[ -n "${GITLAB_TOKEN}" ]]; then
+  # With a token we can ask for “created_by_me” without knowing the username
+  AUTHOR_Q="scope=created_by_me"
+else
+  echo "error: Set GL_USER to your gitlab.com username or provide GITLAB_TOKEN." >&2
+  exit 1
 fi
 
 tmpdir="$(mktemp -d)"
@@ -22,12 +40,12 @@ out_jsonl="${tmpdir}/items.jsonl"
 
 page=1
 while :; do
-  url="${BASE}?author_username=${GL_USER}&scope=all&state=all&created_after=${SINCE_ISO}&order_by=created_at&sort=desc&per_page=${PER_PAGE}&page=${page}"
+  url="${BASE}?${AUTHOR_Q}&state=all&updated_after=${SINCE_ISO}&order_by=created_at&sort=desc&per_page=${PER_PAGE}&page=${page}"
   resp="$(command curl -sS "${hdrs[@]}" "$url")"
-  cnt="$(jq 'length' <<<"$resp" 2>/dev/null || echo 0)"
+  cnt="$(jq 'if type=="array" then length else 0 end' <<<"$resp" 2>/dev/null || echo 0)"
   [[ "$cnt" -eq 0 ]] && break
 
-  mapfile -t mrs < <(jq -r '.[] | @base64' <<<"$resp")
+  mapfile -t mrs < <(jq -r 'if type=="array" then .[] | @base64 else empty end' <<<"$resp")
   for b in "${mrs[@]}"; do
     item_json="$(echo "$b" | base64 -d)"
     web_url="$(jq -r '.web_url // empty' <<<"$item_json")"
@@ -37,16 +55,24 @@ while :; do
     target_branch="$(jq -r '.target_branch // ""' <<<"$item_json")"
     source_branch="$(jq -r '.source_branch // ""' <<<"$item_json")"
     project_path="$(jq -r '.references.full // ""' <<<"$item_json" | awk -F'!' '{print $1}')"
+    # Fallback: derive project path from web_url if not present in list response
+    if [[ -z "$project_path" || "$project_path" == "null" ]]; then
+      tmp_path="${web_url#https://gitlab.com/}"
+      project_path="${tmp_path%%/-/merge_requests/*}"
+    fi
     iid="$(jq -r '.iid // empty' <<<"$item_json")"
     repo_short="$(jq -r '.references.short // empty' <<<"$item_json" | awk -F'!' '{print $1}' | awk -F'/' '{print $NF}')"
+    if [[ -z "$repo_short" || "$repo_short" == "null" ]]; then
+      repo_short="${project_path##*/}"
+    fi
 
     # Compute adds/dels from patch
     patchfile="${tmpdir}/$(echo "$project_path" | tr '/' '_')_${iid}.patch"
     if ! command curl -fsS --compressed -L "${web_url}.patch" -o "$patchfile" ; then
       command curl -fsS --compressed -L "${web_url}.diff" -o "$patchfile" || : > "$patchfile"
     fi
-    adds=$(grep -E '^\+'  "$patchfile" | grep -Ev '^\+\+\+|^diff |^index ' | wc -l | awk '{print $1}')
-    dels=$(grep -E '^-'  "$patchfile" | grep -Ev '^---|^diff |^index ' | wc -l | awk '{print $1}')
+    adds="$(awk 'BEGIN{a=0} /^diff |^index |^\\+\\+\\+|^---/ {next} /^\\+[^+]/ {a++} END{print a}' "$patchfile")"
+    dels="$(awk 'BEGIN{d=0} /^diff |^index |^\\+\\+\\+|^---/ {next} /^-[^-]/ {d++} END{print d}' "$patchfile")"
 
     # Commits
     enc_path="$(python3 - "$project_path" <<'PY'
@@ -56,7 +82,7 @@ PY
 )"
     commits_api="https://gitlab.com/api/v4/projects/${enc_path}/merge_requests/${iid}/commits"
     commits_json="$(command curl -sS "${hdrs[@]}" "$commits_api" || true)"
-    commits_msgs=$(jq -r '.[].message // empty' <<<"$commits_json")
+    commits_msgs=$(jq -r '.[].message // empty' <<<"$commits_json" 2>/dev/null || echo "")
 
     # Determine prefix: [R] for gitlab.com/redhat/*, else [U]
     prefix_val="[U]"
