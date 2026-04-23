@@ -1,7 +1,7 @@
 You will receive a single JSON array with PR/MR data from three forges: src.fedoraproject.org (Pagure), github.com (GitHub), and gitlab.com (GitLab). Produce a single consolidated, grouped report as specified below. Do not fetch any external data.
 
 Input
-- Next message will contain a JSON array. Each element is one PR/MR with fields (some may be empty):
+- Read the file called `json` in the current directory. It contains a JSON array. Each element is one PR/MR with fields (some may be empty):
   - forge: "pagure" | "github" | "gitlab"
   - prefix: "[F]" | "[R]" | "[U]"
   - repo: repository short name or full name
@@ -156,4 +156,4 @@ Edge cases
 - Keep the output concise and factual.
 - Never infer motivations, performance impact, or security status unless explicitly present in the allowed inputs. If details are missing, prefer a conservative, factual phrasing (e.g., “Update to X” or “Backport of Y to branch Z”).
 
-Return only the final markdown list, nothing else.
+Return only the final markdown list, nothing else. Save it to report.md, overwriting any previous content.
