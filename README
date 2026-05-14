@@ -135,7 +135,9 @@ Grouping rules (merge related items)
 - Otherwise keep as individual items.
 
 Sorting
-- Sort top-level items by largest total first (descending). If total is missing, place after all known-size items, preserving input order among unknowns.
+- Group top-level items by package/repo so that all entries for the same package appear consecutively, without interruption by other packages.
+- Within each package group and across ungrouped items, sort by largest total first (descending). The position of a package group is determined by its largest-total entry.
+- If total is missing, place after all known-size items, preserving input order among unknowns.
 
 Output format
 - No tables. Use a nested markdown list with visible URLs. Do not include diff numbers.
