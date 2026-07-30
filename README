@@ -1,13 +1,14 @@
-You will receive a single JSON array with PR/MR data from three forges: src.fedoraproject.org (Pagure), github.com (GitHub), and gitlab.com (GitLab). Produce a single consolidated, grouped report as specified below. Do not fetch any external data.
+You will receive a single JSON array with PR/MR data from four forges: src.fedoraproject.org (Pagure), github.com (GitHub), gitlab.com (GitLab), and forge.fedoraproject.org (Forgejo). Produce a single consolidated, grouped report as specified below. Do not fetch any external data.
 
 Input
 - Read the file called `json` in the current directory. It contains a JSON array. Each element is one PR/MR with fields (some may be empty):
-  - forge: "pagure" | "github" | "gitlab"
+  - forge: "pagure" | "github" | "gitlab" | "forgejo"
   - prefix: "[F]" | "[R]" | "[U]"
   - repo: repository short name or full name
   - title: PR/MR title
   - url: PR/MR HTML URL
   - state: open/closed/merged (as provided)
+  - activity: "authored" | "reviewed" | "merged"
   - merged_at: timestamp when merged (may be empty)
   - target_branch: target branch name when available
   - source_branch: source branch name when available
@@ -17,86 +18,6 @@ Input
   - body: initial description/body text (string, may be empty)
   - commits: array of commit message strings
 
-What to fetch per URL -- use curl calls as indicated in the included exmples.
-- Pagure (src.fedoraproject.org):
-  - API: https://src.fedoraproject.org/api/0/{namespace}/{name}/pull-request/{id}
-  - Extract: repo short name (.project.name), title (.title), branch (.branch), full_url (.full_url), status (.status), initial_comment (.initial_comment).
-  - Commits: if needed, infer commit messages from the {PR_URL}.patch headers (subject lines) only; do not read other repository files.
-  - Diff size: fetch {PR_URL}.patch (fallback {PR_URL}?format=patch), count additions/deletions (lines starting with “+”/“-”, ignore headers like “diff ”, “index ”, “+++”, “---”). Size = adds + dels.
-  - Examples:
-    ```bash
-    # PR metadata
-    curl -sS -H 'Accept: application/json' \
-      https://src.fedoraproject.org/api/0/rpms/foo/pull-request/123 \
-      | jq '{title:.title, branch:.branch, url:.full_url, status:.status}'
-
-    # Commit subject lines from the patch (best-effort)
-    curl -sS https://src.fedoraproject.org/rpms/foo/pull-request/123.patch \
-      | grep '^Subject:' || true
-
-    # Diff size (adds+deletes)
-    curl -sS https://src.fedoraproject.org/rpms/foo/pull-request/123.patch \
-      | awk 'BEGIN{a=0;d=0} 
-             /^diff |^index |^\+\+\+|^---/ {next}
-             /^\+[^+]/ {a++} 
-             /^-[^-]/ {d++} 
-             END{print a+d}'
-    ```
-- GitHub (github.com):
-  - API: https://api.github.com/repos/{owner}/{repo}/pulls/{number} (Accept: application/vnd.github+json)
-  - Extract: repo (.base.repo.full_name), title (.title), html_url (.html_url), state/merged_at, additions (.additions), deletions (.deletions), body (.body).
-  - Commits: https://api.github.com/repos/{owner}/{repo}/pulls/{number}/commits → collect commit messages (.commit.message).
-  - Diff size: prefer additions+deletions from API; if missing, use {PR_URL}.patch and count lines as above.
-  - Examples:
-    ```bash
-    # PR metadata (includes additions/deletions)
-    curl -sS -H 'Accept: application/vnd.github+json' \
-      https://api.github.com/repos/owner/repo/pulls/123 \
-      | jq '{title:.title, url:.html_url, adds:.additions, dels:.deletions}'
-
-    # Commit messages
-    curl -sS -H 'Accept: application/vnd.github+json' \
-      https://api.github.com/repos/owner/repo/pulls/123/commits \
-      | jq -r '.[].commit.message'
-
-    # Fallback diff size via patch
-    curl -sS https://github.com/owner/repo/pull/123.patch \
-      | awk 'BEGIN{a=0;d=0} 
-             /^diff |^index |^\+\+\+|^---/ {next}
-             /^\+[^+]/ {a++} 
-             /^-[^-]/ {d++} 
-             END{print a+d}'
-    ```
-- GitLab (gitlab.com):
-  - API: https://gitlab.com/api/v4/projects/{url-encoded project path}/merge_requests/{iid}
-    - Project path is the segment before “/-/merge_requests/” (URL-encode fully).
-  - Extract: repo short name (last path segment), title (.title), web_url (.web_url), description (.description), state, source/target branch if available.
-  - Commits: https://gitlab.com/api/v4/projects/{url-encoded project path}/merge_requests/{iid}/commits → collect commit messages (.message).
-  - Diff size: try {MR_URL}.patch (fallback {MR_URL}.diff) and count lines as above.
-  - Examples:
-    ```bash
-    # Suppose project path is redhat/centos-stream/rpms/python-requests → URL-encode as:
-    # redhat%2Fcentos-stream%2Frpms%2Fpython-requests
-
-    # MR metadata
-    curl -sS -H 'Accept: application/json' \
-      "https://gitlab.com/api/v4/projects/redhat%2Fcentos-stream%2Frpms%2Fpython-requests/merge_requests/20" \
-      | jq '{title:.title, url:.web_url, state:.state, target_branch:.target_branch}'
-
-    # Commit messages
-    curl -sS -H 'Accept: application/json' \
-      "https://gitlab.com/api/v4/projects/redhat%2Fcentos-stream%2Frpms%2Fpython-requests/merge_requests/20/commits" \
-      | jq -r '.[].message'
-
-    # Diff size via patch
-    curl -sS https://gitlab.com/redhat/centos-stream/rpms/python-requests/-/merge_requests/20.patch \
-      | awk 'BEGIN{a=0;d=0} 
-             /^diff |^index |^\+\+\+|^---/ {next}
-             /^\+[^+]/ {a++} 
-             /^-[^-]/ {d++} 
-             END{print a+d}'
-    ```
-
 Data-source constraints (strict)
 - Allowed inputs for summaries: title, body, commit messages for that PR/MR, and the provided totals for sorting.
 - Forbidden inputs: any network fetches, repository files (README, docs), issues, discussions outside the initial description, other PRs/MRs, project websites, external documentation, or prior/model knowledge.
@@ -105,57 +26,68 @@ Data-source constraints (strict)
 Setting PREFIX
 - Use the provided prefix for each item. For grouped items, combine with plus, e.g. [F+R].
 
+Activity types
+- "authored" items: format normally as described below. This is the default.
+- "reviewed" and "merged" items: do not include in the main report. Instead, collect all their URLs into a single "Reviews:" bullet at the end of the report, listed as sub-bullets (just the bare URLs, no titles or summaries).
+- Only "authored" items participate in merging, sorting, clustering, and summarization.
+
 Summarization (one or two sentences)
 - Use only these sources: title, initial description/body, commit messages from the PR/MR, and the diff.
 - Do not use any other project context (README, issues, other PRs/MRs, wiki, external docs) or prior knowledge.
 - Recognize patterns:
-  - “Update to X” → mention new version.
-  - “FF-merge”/“Forward merge” → note target branch and purpose if stated in allowed sources.
+  - "Update to X" → mention new version.
+  - "FF-merge"/"Forward merge" → note target branch and purpose if stated in allowed sources.
   - CVEs (CVE-YYYY-NNNNN) → call out as a security fix verbatim.
-  - Rebuilds (e.g., “Python 3.14.0rc3 bytecode”) → note as rebuild/compatibility when stated in allowed sources.
-- Write one or two sentences; avoid speculative verbs (e.g., “ensures”, “aims”) unless explicitly present in the allowed sources. Do not prefix with “Summary:”.
+  - Rebuilds (e.g., "Python 3.14.0rc3 bytecode") → note as rebuild/compatibility when stated in allowed sources.
+- Write one or two sentences; avoid speculative verbs (e.g., "ensures", "aims") unless explicitly present in the allowed sources. Do not prefix with "Summary:".
+- If the summary would only repeat the title in different words, omit it entirely. Only include a summary when it adds information beyond what the title already says (e.g., a bug tracker reference, a link, a reason, or technical detail).
 
 Phrasing and citation style (strict)
-- Do not use meta-language like “the description says…”, “the PR mentions…”, or “according to the body…”.
+- Do not use meta-language like "the description says…", "the PR mentions…", or "according to the body…".
 - Write declarative statements based only on the allowed inputs. Examples:
-  - Prefer “See rhbz#2366308, functionality was not verified.” over “The description references rhbz#2366308 and notes functionality was not verified.”
-  - Prefer “Useful when extras are built from a different specfile.” over “Initial description notes usefulness when extras are built from a different specfile.”
-  - Prefer “See <paste the exact link present in the PR>.” over “The PR references the packaging list discussion.”
+  - Prefer "See rhbz#2366308, functionality was not verified." over "The description references rhbz#2366308 and notes functionality was not verified."
+  - Prefer "Useful when extras are built from a different specfile." over "Initial description notes usefulness when extras are built from a different specfile."
+  - Prefer "See <paste the exact link present in the PR>." over "The PR references the packaging list discussion."
 - Only include trackers/links that are explicitly present in the allowed inputs (title/body/commits). Do not invent or derive external links.
 - Keep phrasing minimal and factual; if details are absent, do not speculate.
 
-Grouping rules (merge related items)
-- Group PRs/MRs that are clearly the same fix across branches or forges:
-  - Same package/repo family (e.g., GitHub “fedora-iot/rpm-head-signing” with Pagure “rpms/rpm-head-signing”), same CVE, same version bump, or near-identical titles that differ only by branch tags.
-  - Rebuilds for same reasons (e.g. “Rebuilt for Python 3.14.0rc3 bytecode”).
-- For a grouped item:
-  - Top-level bullet: “[PREFIX] repo-name (or consolidated label): short grouped title”; no need to say “grouped” in it.
-  - Then list each related URL as its own sub-bullet; for Pagure include “[<branch>]” where known.
+Merging (combine related items into one bullet)
+- Merge PRs/MRs that are clearly the same fix across branches or forges into a single bullet:
+  - Same package/repo family (e.g., GitHub "fedora-iot/rpm-head-signing" with Pagure "rpms/rpm-head-signing"), same CVE, same version bump, or near-identical titles that differ only by branch tags.
+  - Rebuilds for same reasons (e.g. "Rebuilt for Python 3.14.0rc3 bytecode").
+- Only merge items with the same activity type.
+- Cross-forge items for the same upstream project (e.g., Pagure "pythran" and GitHub "serge-sans-paille/pythran") are the same package family for clustering purposes, but only merge them into one bullet when the fix is actually the same.
+- For a merged item:
+  - Top-level bullet: "[PREFIX] repo-name: title" — use the shared title, dropping branch/status prefixes like "[F44]" or "Draft:" if they don't apply to all items.
+  - Then list each related URL as its own sub-bullet; include "[<branch>]" when the branch distinguishes items in the group (any forge, not just Pagure).
   - Provide one two-sentence summary for the group. Don't explicitly say it's grouped together or why.
 - Otherwise keep as individual items.
 
-Sorting
-- Group top-level items by package/repo so that all entries for the same package appear consecutively, without interruption by other packages.
-- Within each package group and across ungrouped items, sort by largest total first (descending). The position of a package group is determined by its largest-total entry.
+Sorting and clustering
+- Cluster top-level items by package/repo so that all entries for the same package family appear consecutively, without interruption by other packages.
+- Within each cluster, sort authored items first, then merged, then reviewed.
+- Across clusters, sort by largest total first (descending). The position of a cluster is determined by its largest-total entry.
+- Break ties (same total) by input order in the JSON array.
 - If total is missing, place after all known-size items, preserving input order among unknowns.
 
 Output format
 - No tables. Use a nested markdown list with visible URLs. Do not include diff numbers.
+- Use the `repo` field from the JSON as the repo-name (e.g., "python/cpython" for GitHub, "pythran" for Pagure).
 - For a single PR/MR:
   - [PREFIX] repo-name: title
     - URL
     - Sentence 1. Sentence 2
-- For a grouped item:
-  - [PREFIX] repo-name: short title
+- For a merged item:
+  - [PREFIX] repo-name: title
     - URL_1 [<branch>] (when known)
     - URL_2 [<branch>]
     - Sentence 1. Sentence 2.
-- Do not add any extra “Reference:” bullets or explanatory text.
+- Do not add any extra "Reference:" bullets or explanatory text.
 
 Edge cases
 - If an API/patch fetch fails, still include the item using the title and URL; treat size as unknown.
-- Strip any leading “@” from URLs.
+- Strip any leading "@" from URLs.
 - Keep the output concise and factual.
-- Never infer motivations, performance impact, or security status unless explicitly present in the allowed inputs. If details are missing, prefer a conservative, factual phrasing (e.g., “Update to X” or “Backport of Y to branch Z”).
+- Never infer motivations, performance impact, or security status unless explicitly present in the allowed inputs. If details are missing, prefer a conservative, factual phrasing (e.g., "Update to X" or "Backport of Y to branch Z").
 
 Return only the final markdown list, nothing else. Save it to report.md, overwriting any previous content.
