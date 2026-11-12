@@ -39,15 +39,15 @@ Summarization (one or two sentences)
   - "FF-merge"/"Forward merge" → note target branch and purpose if stated in allowed sources.
   - CVEs (CVE-YYYY-NNNNN) → call out as a security fix verbatim.
   - Rebuilds (e.g., "Python 3.14.0rc3 bytecode") → note as rebuild/compatibility when stated in allowed sources.
-- Write one or two sentences; avoid speculative verbs (e.g., "ensures", "aims") unless explicitly present in the allowed sources. Do not prefix with "Summary:".
-- If the summary would only repeat the title in different words, omit it entirely. Only include a summary when it adds information beyond what the title already says (e.g., a bug tracker reference, a link, a reason, or technical detail).
+- Write one short sentence, two at most; avoid speculative verbs (e.g., "ensures", "aims") unless explicitly present in the allowed sources. Do not prefix with "Summary:".
+- Omit commit hashes, cherry-pick references, "Assisted-By" lines, reviewer to-do notes (e.g. "let me know if..."), and test-environment remarks.
+- If the summary would only repeat the title in different words, or only gives generic background, omit it entirely. Only include a summary when it adds information beyond what the title already says (e.g., a bug tracker reference, a reason, or technical detail).
+- For merged items, omit the summary unless it says something specific that applies to the whole group.
 
 Phrasing and citation style (strict)
 - Do not use meta-language like "the description says…", "the PR mentions…", or "according to the body…".
-- Write declarative statements based only on the allowed inputs. Examples:
-  - Prefer "See rhbz#2366308, functionality was not verified." over "The description references rhbz#2366308 and notes functionality was not verified."
-  - Prefer "Useful when extras are built from a different specfile." over "Initial description notes usefulness when extras are built from a different specfile."
-  - Prefer "See <paste the exact link present in the PR>." over "The PR references the packaging list discussion."
+- Write declarative statements based only on the allowed inputs, e.g. "Useful when extras are built from a different specfile." rather than "Initial description notes usefulness when extras are built from a different specfile."
+- Include a link only when it is the point of the item (e.g. a mailing list thread), as "See <exact link present in the PR>."
 - Only include trackers/links that are explicitly present in the allowed inputs (title/body/commits). Do not invent or derive external links.
 - Keep phrasing minimal and factual; if details are absent, do not speculate.
 
@@ -57,16 +57,18 @@ Merging (combine related items into one bullet)
   - Rebuilds for same reasons (e.g. "Rebuilt for Python 3.14.0rc3 bytecode").
 - Only merge items with the same activity type.
 - Cross-forge items for the same upstream project (e.g., Pagure "pythran" and GitHub "serge-sans-paille/pythran") are the same package family for clustering purposes, but only merge them into one bullet when the fix is actually the same.
+- Also merge PRs/MRs with the same title, ignoring tracker references like "(rhbz#NNN)", even across unrelated packages (e.g. "Convert to pyproject RPM macros"). Drop those tracker references from the merged title.
 - For a merged item:
   - Top-level bullet: "[PREFIX] repo-name: title" — use the shared title, dropping branch/status prefixes like "[F44]" or "Draft:" if they don't apply to all items.
-  - Then list each related URL as its own sub-bullet; include "[<branch>]" when the branch distinguishes items in the group (any forge, not just Pagure).
-  - Provide one two-sentence summary for the group. Don't explicitly say it's grouped together or why.
+  - Repo-name: if the group spans several repos, list them (e.g. "python3.9 / python3.10 / python3.11"); when that list would be too long, use "various packages".
+  - Then list the related URLs as sub-bullets. For PRs/MRs in the same repo, use one sub-bullet with the shared URL prefix and the number range (e.g. ".../pull-request/209 .. 212"), without branches. For PRs/MRs in different repos, list each URL as its own sub-bullet.
+  - Provide a short summary for the group only if it adds information. Don't explicitly say it's grouped together or why.
 - Otherwise keep as individual items.
 
 Sorting and clustering
 - Cluster top-level items by package/repo so that all entries for the same package family appear consecutively, without interruption by other packages.
 - Within each cluster, sort authored items first, then merged, then reviewed.
-- Across clusters, sort by largest total first (descending). The position of a cluster is determined by its largest-total entry.
+- Across clusters, sort by largest total first (descending). The position of a cluster (or of a merged item) is determined by its largest-total entry.
 - Break ties (same total) by input order in the JSON array.
 - If total is missing, place after all known-size items, preserving input order among unknowns.
 
@@ -79,9 +81,8 @@ Output format
     - Sentence 1. Sentence 2
 - For a merged item:
   - [PREFIX] repo-name: title
-    - URL_1 [<branch>] (when known)
-    - URL_2 [<branch>]
-    - Sentence 1. Sentence 2.
+    - URL_PREFIX/N .. M (same repo), or one URL per sub-bullet (different repos)
+    - Sentence 1. (only if it adds information)
 - Do not add any extra "Reference:" bullets or explanatory text.
 
 Edge cases
